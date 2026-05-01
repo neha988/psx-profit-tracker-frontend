@@ -230,16 +230,18 @@ function AuthStyles() {
 }
 
 // ─── UPLOAD ZONE ────────────────────────────
+// ─── UPLOAD ZONE (Multi-PDF) ────────────────
 function UploadZone({ token, onSuccess }) {
   const [dragging, setDragging] = useState(false)
-  const [status, setStatus] = useState(null)
-  const [message, setMessage] = useState('')
+  const [uploads, setUploads] = useState([]) // [{name, status, message}]
+  const [running, setRunning] = useState(false)
 
-  const upload = async (file) => {
-    if (!file) { setStatus('error'); setMessage('No file selected. Please try again.'); return }
-    if (!file.name.toLowerCase().endsWith('.pdf')) { setStatus('error'); setMessage('Please upload a PDF file only'); return }
-    setStatus('uploading')
-    setMessage('Reading your transaction statement...')
+  const uploadFile = async (file, index, updateItem) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      updateItem(index, 'error', 'Not a PDF file')
+      return
+    }
+    updateItem(index, 'uploading', 'Reading statement...')
     const form = new FormData()
     form.append('file', file)
     try {
@@ -249,48 +251,113 @@ function UploadZone({ token, onSuccess }) {
         body: form
       })
       const data = await res.json()
-      if (!res.ok) { setStatus('error'); setMessage(data.detail || `Upload failed (${res.status})`) }
-      else {
-        setStatus('success')
-        setMessage(`${data.trades_imported} trades imported from ${data.statement_id}`)
-        setTimeout(() => { setStatus(null); onSuccess() }, 2500)
+      if (!res.ok) {
+        updateItem(index, 'error', data.detail || `Failed (${res.status})`)
+      } else {
+        updateItem(index, 'success', `${data.trades_imported} trades imported · ${data.statement_id}`)
       }
     } catch (err) {
-      setStatus('error'); setMessage('Connection error: ' + err.message)
+      updateItem(index, 'error', 'Connection error: ' + err.message)
     }
   }
 
-  const onDrop = (e) => { e.preventDefault(); setDragging(false); upload(e.dataTransfer.files[0]) }
+  const handleFiles = async (files) => {
+    const fileArr = Array.from(files)
+    if (!fileArr.length) return
+
+    const initial = fileArr.map(f => ({ name: f.name, status: 'pending', message: 'Waiting...' }))
+    setUploads(initial)
+    setRunning(true)
+
+    const updateItem = (i, status, message) => {
+      setUploads(prev => prev.map((u, idx) => idx === i ? { ...u, status, message } : u))
+    }
+
+    // Upload one by one sequentially
+    for (let i = 0; i < fileArr.length; i++) {
+      await uploadFile(fileArr[i], i, updateItem)
+    }
+
+    setRunning(false)
+    onSuccess() // refresh data after all uploads
+  }
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    setDragging(false)
+    handleFiles(e.dataTransfer.files)
+  }
+
+  const reset = () => setUploads([])
+
+  const allDone = uploads.length > 0 && !running
+  const hasError = uploads.some(u => u.status === 'error')
 
   return (
-    <div
-      className={`upload-zone ${dragging ? 'drag' : ''} ${status === 'uploading' ? 'uploading' : ''}`}
-      onDragOver={e => { e.preventDefault(); setDragging(true) }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={onDrop}
-      onClick={() => status !== 'uploading' && document.getElementById('pdfInput').click()}
-    >
-      <input id="pdfInput" type="file" accept=".pdf" hidden onChange={e => upload(e.target.files[0])} />
-      {status === 'uploading' && <div className="upload-state"><div className="spinner" /><p>{message}</p></div>}
-      {status === 'success' && <div className="upload-state success"><div className="check-icon">✓</div><p>{message}</p></div>}
-      {status === 'error' && <div className="upload-state error"><div className="x-icon">✕</div><p>{message}</p><span className="retry">Click to try again</span></div>}
-      {!status && (
-        <div className="upload-state">
-          <div className="upload-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
+    <div className="upload-outer">
+      {uploads.length === 0 ? (
+        <div
+          className={`upload-zone ${dragging ? 'drag' : ''}`}
+          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onClick={() => document.getElementById('pdfInput').click()}
+        >
+          <input
+            id="pdfInput"
+            type="file"
+            accept=".pdf"
+            multiple
+            hidden
+            onChange={e => handleFiles(e.target.files)}
+          />
+          <div className="upload-state">
+            <div className="upload-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <p className="upload-label">Drop your Munir Khanani PDFs here</p>
+            <span className="upload-sub">or click to browse · Select multiple files for bulk upload</span>
           </div>
-          <p className="upload-label">Drop your Munir Khanani PDF here</p>
-          <span className="upload-sub">or click to browse · Transaction statements only</span>
+        </div>
+      ) : (
+        <div className="upload-progress-box">
+          <div className="upload-progress-header">
+            <span className="upload-progress-title">
+              {running ? `Uploading ${uploads.filter(u => u.status === 'success' || u.status === 'error').length} / ${uploads.length}...` 
+                       : `Done — ${uploads.filter(u => u.status === 'success').length} of ${uploads.length} imported`}
+            </span>
+            {allDone && (
+              <button className="btn-link" onClick={reset}>Upload more</button>
+            )}
+          </div>
+          <div className="upload-file-list">
+            {uploads.map((u, i) => (
+              <div key={i} className={`upload-file-item ${u.status}`}>
+                <div className="upload-file-icon">
+                  {u.status === 'pending'   && <span className="file-dot pending-dot" />}
+                  {u.status === 'uploading' && <div className="spinner-sm" />}
+                  {u.status === 'success'   && <span className="file-check">✓</span>}
+                  {u.status === 'error'     && <span className="file-x">✕</span>}
+                </div>
+                <div className="upload-file-info">
+                  <div className="upload-file-name">{u.name}</div>
+                  <div className="upload-file-msg">{u.message}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {allDone && hasError && (
+            <div className="upload-retry-note">Some files failed. Fix them and upload again.</div>
+          )}
         </div>
       )}
     </div>
   )
 }
-
 // ─── SUMMARY CARDS ───────────────────────────
 function SummaryCards({ summary }) {
   if (!summary) return null
@@ -857,6 +924,28 @@ export default function App() {
           .tab { white-space: nowrap; }
           .calculator-controls, .calculator-results { grid-template-columns: 1fr; }
         }
+          /* MULTI UPLOAD */
+.upload-outer { margin-bottom: 1.5rem; }
+.upload-progress-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.upload-progress-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; }
+.upload-progress-title { color: var(--text); }
+.upload-file-list { padding: 8px 0; }
+.upload-file-item { display: flex; align-items: center; gap: 12px; padding: 10px 16px; transition: background 0.15s; }
+.upload-file-item.uploading { background: rgba(59,130,246,0.05); }
+.upload-file-item.success { background: rgba(16,185,129,0.05); }
+.upload-file-item.error { background: rgba(239,68,68,0.05); }
+.upload-file-icon { width: 24px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.file-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border2); display: block; }
+.pending-dot { background: var(--muted); }
+.spinner-sm { width: 16px; height: 16px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.file-check { color: var(--profit); font-size: 15px; font-weight: 700; }
+.file-x { color: var(--loss); font-size: 15px; font-weight: 700; }
+.upload-file-info { flex: 1; min-width: 0; }
+.upload-file-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upload-file-msg { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.upload-file-item.success .upload-file-msg { color: var(--profit); }
+.upload-file-item.error .upload-file-msg { color: var(--loss); }
+.upload-retry-note { padding: 10px 16px; font-size: 12px; color: var(--orange); border-top: 1px solid var(--border); background: var(--orange-bg); }
       `}</style>
 
       <div className="site-shell tracker-shell">
