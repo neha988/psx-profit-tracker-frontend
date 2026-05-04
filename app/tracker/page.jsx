@@ -32,6 +32,7 @@ const fmt = (n) => new Intl.NumberFormat('en-PK', { minimumFractionDigits: 2, ma
 const fmtPL = (n) => `${n >= 0 ? '+' : ''}Rs. ${fmt(n)}`
 const isProfit = (n) => n > 0
 const isLoss = (n) => n < 0
+const getMarket = (t) => t?.is_futures ? 'Futures' : 'Ready'
 
 // Convert UTC time to Pakistani Time (PKT = UTC+5)
 const toPKT = (dateStr) => {
@@ -235,6 +236,7 @@ function UploadZone({ token, onSuccess }) {
   const [dragging, setDragging] = useState(false)
   const [uploads, setUploads] = useState([]) // [{name, status, message}]
   const [running, setRunning] = useState(false)
+  const inputId = 'pdfInput'
 
   const uploadFile = async (file, index, updateItem) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -301,10 +303,10 @@ function UploadZone({ token, onSuccess }) {
           onDragOver={e => { e.preventDefault(); setDragging(true) }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
-          onClick={() => document.getElementById('pdfInput').click()}
+          onClick={() => document.getElementById(inputId).click()}
         >
           <input
-            id="pdfInput"
+            id={inputId}
             type="file"
             accept=".pdf"
             multiple
@@ -319,7 +321,7 @@ function UploadZone({ token, onSuccess }) {
                 <line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
             </div>
-            <p className="upload-label">Drop your Munir Khanani PDFs here</p>
+            <p className="upload-label">Upload PDF</p>
             <span className="upload-sub">or click to browse · Select multiple files for bulk upload</span>
           </div>
         </div>
@@ -359,43 +361,178 @@ function UploadZone({ token, onSuccess }) {
   )
 }
 // ─── SUMMARY CARDS ───────────────────────────
-function SummaryCards({ summary }) {
-  if (!summary) return null
-  const cards = [
-    { label: "Today's P&L", value: summary.today_pl, type: 'pl' },
-    { label: "This Week", value: summary.week_pl, type: 'pl' },
-    { label: "This Month", value: summary.month_pl, type: 'pl' },
-    { label: "Total Charges", value: summary.total_charges, type: 'charge' },
-    { label: "Win Rate", value: `${summary.win_rate}%`, type: 'rate' },
-    { label: "Total Trades", value: summary.total_trades, type: 'count' },
-  ]
+const normalizeTradeDate = (dateValue) => String(dateValue || '').slice(0, 10)
+
+const isDateInRange = (dateValue, startDate, endDate) => {
+  const date = normalizeTradeDate(dateValue)
+  if (!date) return false
+  if (startDate && endDate) {
+    const from = startDate <= endDate ? startDate : endDate
+    const to = startDate <= endDate ? endDate : startDate
+    return date >= from && date <= to
+  }
+  if (startDate) return date === startDate
+  if (endDate) return date === endDate
+  return true
+}
+
+const getPairSummaries = (trades = []) => {
+  const byPair = {}
+  trades
+    .filter(t => t?.pair_id && t?.matched !== false && t?.net_pl !== null && t?.net_pl !== undefined)
+    .forEach(t => {
+      if (!byPair[t.pair_id]) {
+        byPair[t.pair_id] = {
+          pair_id: t.pair_id,
+          broker: t.broker || 'Unknown',
+          date: normalizeTradeDate(t.trade_date),
+          tradeDates: [],
+          pl: Number(t.net_pl) || 0,
+          charges: 0,
+        }
+      }
+      byPair[t.pair_id].charges += Number(t.total_charges) || 0
+      const tradeDate = normalizeTradeDate(t.trade_date)
+      if (tradeDate && !byPair[t.pair_id].tradeDates.includes(tradeDate)) {
+        byPair[t.pair_id].tradeDates.push(tradeDate)
+      }
+      if (tradeDate > (byPair[t.pair_id].date || '')) {
+        byPair[t.pair_id].date = tradeDate
+      }
+    })
+  return Object.values(byPair)
+}
+
+const makePeriodBreakdown = (label, pairs, predicate) => {
+  const rows = pairs.filter(predicate)
+  return {
+    label,
+    total: rows.reduce((sum, t) => sum + t.pl, 0),
+  }
+}
+
+const makeBrokerRowsForDate = (brokers, pairs, startDate, endDate) => {
+  if (!startDate && !endDate) return brokers || []
+  const knownBrokers = brokers?.length
+    ? brokers.map(b => b.broker || 'Unknown')
+    : Array.from(new Set(pairs.map(t => t.broker || 'Unknown'))).sort()
+  return knownBrokers.map(broker => {
+    const rows = pairs.filter(t => {
+      const dates = t.tradeDates?.length ? t.tradeDates : [t.date]
+      return (t.broker || 'Unknown') === broker && dates.some(date => isDateInRange(date, startDate, endDate))
+    })
+    const trades = rows.length
+    const wins = rows.filter(t => t.pl > 0).length
+    return {
+      broker,
+      pl: rows.reduce((sum, t) => sum + t.pl, 0),
+      trades,
+      win_rate: trades ? Math.round((wins / trades) * 1000) / 10 : 0,
+      charges: rows.reduce((sum, t) => sum + t.charges, 0),
+    }
+  })
+}
+
+function PeriodPnlCard({ item }) {
+  const tone = isProfit(item.total) ? 'profit' : isLoss(item.total) ? 'loss' : ''
   return (
-    <div className="cards-grid">
-      {cards.map(c => (
-        <div key={c.label} className={`summary-card ${c.type === 'pl' ? (isProfit(c.value) ? 'profit' : isLoss(c.value) ? 'loss' : '') : ''}`}>
-          <div className="card-label">{c.label}</div>
-          <div className="card-value">
-            {c.type === 'pl' ? fmtPL(c.value) :
-             c.type === 'charge' ? `Rs. ${fmt(c.value)}` :
-             c.value}
-          </div>
+    <div className={`period-card ${tone}`}>
+      <div className="period-card-head">
+        <div className="card-label">{item.label}</div>
+        <div className={`period-total ${isProfit(item.total) ? 'profit-text' : isLoss(item.total) ? 'loss-text' : ''}`}>
+          {fmtPL(item.total)}
         </div>
-      ))}
-      {summary.best_trade && (
-        <div className="summary-card best">
-          <div className="card-label">Best Trade</div>
-          <div className="card-value">{summary.best_trade.symbol}</div>
-          <div className="card-sub profit-text">{fmtPL(summary.best_trade.pl)}</div>
-        </div>
-      )}
-      {summary.worst_trade && (
-        <div className="summary-card worst">
-          <div className="card-label">Worst Trade</div>
-          <div className="card-value">{summary.worst_trade.symbol}</div>
-          <div className="card-sub loss-text">{fmtPL(summary.worst_trade.pl)}</div>
-        </div>
-      )}
+      </div>
     </div>
+  )
+}
+
+function OverallTotalsCard({ overall }) {
+  const tone = isProfit(overall.profit) ? 'profit' : isLoss(overall.profit) ? 'loss' : ''
+  return (
+    <div className={`overall-totals-card ${tone}`}>
+      <div className="period-line">
+        <span>Overall Profit</span>
+        <strong className={isProfit(overall.profit) ? 'profit-text' : isLoss(overall.profit) ? 'loss-text' : ''}>{fmtPL(overall.profit)}</strong>
+      </div>
+      <div className="period-line">
+        <span>Overall Charges</span>
+        <strong>Rs. {fmt(overall.charges)}</strong>
+      </div>
+      <div className="period-line">
+        <span>Closed Trades</span>
+        <strong>{overall.closedTrades}</strong>
+      </div>
+      <div className="period-line">
+        <span>Open Trades</span>
+        <strong>{overall.openTrades}</strong>
+      </div>
+    </div>
+  )
+}
+
+function SummaryCards({ summary, trades = [], dateStart = '', dateEnd = '' }) {
+  if (!summary) return null
+  const pairs = getPairSummaries(trades)
+  const brokerRows = makeBrokerRowsForDate(summary.brokers || [], pairs, dateStart, dateEnd)
+  const latestDate = pairs.reduce((latest, t) => !latest || (t.date || '') > latest ? t.date : latest, '')
+  const today = new Date()
+  const yyyy = today.getFullYear()
+  const mm = String(today.getMonth() + 1).padStart(2, '0')
+  const dd = String(today.getDate()).padStart(2, '0')
+  const todayStr = `${yyyy}-${mm}-${dd}`
+  const weekStart = new Date(today)
+  const dayOfWeek = today.getDay() || 7
+  weekStart.setDate(today.getDate() - dayOfWeek + 1)
+  const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`
+  const monthStartStr = `${yyyy}-${mm}-01`
+  const periodCards = [
+    makePeriodBreakdown(latestDate ? `Last P&L (${fmtDate(latestDate)})` : 'Last P&L', pairs, t => t.date === latestDate),
+    makePeriodBreakdown('This Week P&L', pairs, t => (t.date || '') >= weekStartStr && (t.date || '') <= todayStr),
+    makePeriodBreakdown('This Month P&L', pairs, t => (t.date || '') >= monthStartStr && (t.date || '') <= todayStr),
+  ]
+  const overall = {
+    profit: pairs.reduce((sum, t) => sum + t.pl, 0),
+    charges: Number(summary.total_charges) || pairs.reduce((sum, t) => sum + t.charges, 0),
+    closedTrades: summary.total_trades || 0,
+    openTrades: trades.filter(t => !t.pair_id || t.matched === false).length,
+  }
+  return (
+    <>
+      <div className="period-grid">
+        {periodCards.map(c => <PeriodPnlCard key={c.label} item={c} />)}
+        <OverallTotalsCard overall={overall} />
+      </div>
+      {brokerRows.length > 0 && (
+        <div className="broker-breakdown">
+          {brokerRows.map(b => (
+            <div key={b.broker} className="broker-card">
+              <div className="broker-card-head">
+                <div>
+                  <div className="broker-kicker">Broker</div>
+                  <div className="broker-name">{b.broker}</div>
+                </div>
+                <div className={`broker-pl ${isProfit(b.pl) ? 'profit-text' : isLoss(b.pl) ? 'loss-text' : ''}`}>{fmtPL(b.pl)}</div>
+              </div>
+              <div className="broker-stats">
+                <div>
+                  <span>Trades</span>
+                  <strong>{b.trades}</strong>
+                </div>
+                <div>
+                  <span>Win Rate</span>
+                  <strong>{b.win_rate}%</strong>
+                </div>
+                <div>
+                  <span>Charges</span>
+                  <strong>Rs. {fmt(b.charges)}</strong>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -414,9 +551,8 @@ function TradeLeg({ t, side }) {
       </div>
       <div className="leg-detail">
         <span className="leg-qty">{t.quantity?.toLocaleString()}</span>
-        <span className="leg-at">@</span>
         <span className="leg-rate">
-          Rs. {fmt(t.rate)}
+          @ Rs. {fmt(t.rate)}
           {t.aggregated && t.aggregated_count > 1 && (
             <span className="leg-avg-tag"> avg</span>
           )}
@@ -431,6 +567,19 @@ function TradeLeg({ t, side }) {
 }
 
 // ─── TRADE PAIRS ─────────────────────────────
+const firstTradeDate = (trade) => {
+  const dates = trade?.trade_dates || trade?.trade_date
+  if (Array.isArray(dates)) return dates[0] || ''
+  return dates || ''
+}
+
+const getPairDirection = (buy, sell) => {
+  const buyDate = firstTradeDate(buy)
+  const sellDate = firstTradeDate(sell)
+  if (sellDate && (!buyDate || sellDate < buyDate)) return 'SHORT'
+  return 'LONG'
+}
+
 function TradePairs({ trades }) {
   if (!trades || trades.length === 0) return (
     <div className="empty-state">
@@ -442,11 +591,14 @@ function TradePairs({ trades }) {
   // Group by symbol
   const bySymbol = {}
   trades.forEach(t => {
-    if (!bySymbol[t.symbol]) bySymbol[t.symbol] = []
-    bySymbol[t.symbol].push(t)
+    const key = `${t.broker || 'Unknown'}|${t.symbol}`
+    if (!bySymbol[key]) bySymbol[key] = []
+    bySymbol[key].push(t)
   })
 
-  const symbolGroups = Object.entries(bySymbol).map(([symbol, trades]) => {
+  const symbolGroups = Object.entries(bySymbol).map(([key, trades]) => {
+    const [broker, symbol] = key.split('|')
+    const company = trades[0].company_name && trades[0].company_name !== symbol ? trades[0].company_name : ''
     const pairs = {}
     const unmatched = []
     
@@ -491,18 +643,19 @@ function TradePairs({ trades }) {
       }
     })
     
-    return { symbol, company: trades[0].company_name, pairs: aggregatedPairs, unmatched }
+    return { symbol, broker, company, pairs: aggregatedPairs, unmatched }
   })
 
   return (
     <div className="trade-groups">
-      {symbolGroups.map(({ symbol, company, pairs, unmatched }) => (
-        <div key={symbol} className="symbol-group">
+      {symbolGroups.map(({ symbol, broker, company, pairs, unmatched }) => (
+        <div key={`${broker}-${symbol}`} className="symbol-group">
           <div className="symbol-header">
             <div>
               <span className="symbol-ticker">{symbol}</span>
               <span className="symbol-company">{company}</span>
             </div>
+            <span className="broker-pill">{broker}</span>
           </div>
 
           {/* ── Matched pairs ── */}
@@ -510,8 +663,12 @@ function TradePairs({ trades }) {
             const sell = pair.SELL
             const buy  = pair.BUY
             const pl   = pair.net_pl || 0
+            const direction = getPairDirection(buy, sell)
             return (
-              <div key={i} className="trade-pair">
+              <div key={i} className={`trade-pair ${direction === 'SHORT' ? 'short-pair' : 'long-pair'}`}>
+                <div className="pair-direction">
+                  <span>{direction}</span>
+                </div>
                 {sell && <TradeLeg t={sell} side="SELL" />}
                 {buy  && <TradeLeg t={buy}  side="BUY"  />}
                 <div className={`pair-pl ${isProfit(pl) ? 'profit-pl' : isLoss(pl) ? 'loss-pl' : ''}`}>
@@ -524,11 +681,13 @@ function TradePairs({ trades }) {
 
           {/* ── Unmatched (awaiting) ── */}
           {unmatched.map((t, i) => (
-            <div key={i} className={`trade-pair unmatched ${t.trade_type === 'SELL' ? 'short-sell' : 'pending-sell'}`}>
+            <div key={i} className={`trade-pair unmatched ${t.is_futures ? 'futures-contract' : t.trade_type === 'SELL' ? 'short-sell' : 'pending-sell'}`}>
               <TradeLeg t={t} side={t.trade_type} />
               <div className="pending-tag">
-                {t.trade_type === 'SELL'
-                  ? '⏳ Awaiting BUY to match (Short Sell)'
+                {t.is_futures
+                  ? `📊 Futures Contract (${t.settlement_type})`
+                  : t.trade_type === 'SELL'
+                  ? '⏳ Awaiting BUY to match'
                   : '⏳ Awaiting SELL to match'}
                 {t.aggregated && t.aggregated_count > 1 && (
                   <span className="agg-tag"> · {t.aggregated_count} entries combined</span>
@@ -543,6 +702,137 @@ function TradePairs({ trades }) {
 }
 
 // ─── CALENDAR ────────────────────────────────
+function TradeLedger({ trades }) {
+  if (!trades || trades.length === 0) return (
+    <div className="empty-state compact">
+      <p>No trades match these filters.</p>
+    </div>
+  )
+
+  const byPair = {}
+  const rows = []
+
+  trades.forEach(t => {
+    if (t.pair_id) {
+      if (!byPair[t.pair_id]) byPair[t.pair_id] = []
+      byPair[t.pair_id].push(t)
+    } else {
+      rows.push({
+        id: t.id,
+        date: t.trade_date,
+        broker: t.broker || 'Unknown',
+        symbol: t.symbol,
+        market: getMarket(t),
+        buy: t.trade_type === 'BUY' ? t : null,
+        sell: t.trade_type === 'SELL' ? t : null,
+        pl: null,
+        status: t.trade_type === 'BUY' ? 'Awaiting SELL' : 'Awaiting BUY',
+        open: true,
+      })
+    }
+  })
+
+  Object.entries(byPair).forEach(([pairId, pairTrades]) => {
+    const buys = pairTrades.filter(t => t.trade_type === 'BUY')
+    const sells = pairTrades.filter(t => t.trade_type === 'SELL')
+    const aggregate = (items) => {
+      if (!items.length) return null
+      const qty = items.reduce((sum, t) => sum + (t.quantity || 0), 0)
+      const gross = items.reduce((sum, t) => sum + (t.gross_amount || 0), 0)
+      const charges = items.reduce((sum, t) => sum + (t.total_charges || 0), 0)
+      return {
+        ...items[0],
+        quantity: qty,
+        gross_amount: gross,
+        total_charges: charges,
+        rate: qty ? gross / qty : items[0].rate,
+        trade_dates: [...new Set(items.map(t => t.trade_date))].sort(),
+      }
+    }
+    const first = pairTrades[0]
+    rows.push({
+      id: pairId,
+      date: first.trade_date,
+      broker: first.broker || 'Unknown',
+      symbol: first.symbol,
+      market: getMarket(first),
+      buy: aggregate(buys),
+      sell: aggregate(sells),
+      pl: first.net_pl || 0,
+      status: 'Closed',
+      open: false,
+    })
+  })
+
+  rows.forEach(row => {
+    row.direction = row.open ? '-' : getPairDirection(row.buy, row.sell)
+  })
+
+  rows.sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.symbol.localeCompare(b.symbol))
+
+  const sideCell = (trade, side) => {
+    if (!trade) return <span className="ledger-muted">-</span>
+    return (
+      <div className="ledger-side">
+        <span className={`ledger-side-badge ${side.toLowerCase()}`}>{side}</span>
+        <strong>{trade.quantity?.toLocaleString()}</strong>
+        <span>@ Rs. {fmt(trade.rate)}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="ledger-wrap">
+      <table className="trade-ledger">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Broker</th>
+            <th>Symbol</th>
+            <th>Market</th>
+            <th>Type</th>
+            <th>Buy</th>
+            <th>Sell</th>
+            <th>Charges</th>
+            <th>Amount</th>
+            <th>P&L</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => {
+            const charges = (row.buy?.total_charges || 0) + (row.sell?.total_charges || 0)
+            const amount = (row.sell?.gross_amount || row.buy?.gross_amount || 0)
+            return (
+              <tr key={row.id} className={row.open ? 'open-row' : ''}>
+                <td>{fmtDate(row.date)}</td>
+                <td><span className="broker-pill ledger-broker">{row.broker}</span></td>
+                <td className="ledger-symbol">{row.symbol}</td>
+                <td>{row.market}</td>
+                <td>
+                  {row.open ? (
+                    <span className="ledger-muted">-</span>
+                  ) : (
+                    <span className={`direction-pill ${row.direction === 'SHORT' ? 'short' : 'long'}`}>{row.direction}</span>
+                  )}
+                </td>
+                <td>{sideCell(row.buy, 'BUY')}</td>
+                <td>{sideCell(row.sell, 'SELL')}</td>
+                <td>Rs. {fmt(charges)}</td>
+                <td>Rs. {fmt(amount)}</td>
+                <td className={row.pl === null ? 'ledger-muted' : isProfit(row.pl) ? 'profit-text' : isLoss(row.pl) ? 'loss-text' : ''}>
+                  {row.pl === null ? '-' : fmtPL(row.pl)}
+                </td>
+                <td><span className={`status-pill ${row.open ? 'open' : 'closed'}`}>{row.status}</span></td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function CalendarView({ token }) {
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
@@ -703,6 +993,11 @@ export default function App() {
   const [trades, setTrades]     = useState([])
   const [summary, setSummary]   = useState(null)
   const [showRemainingOnly, setShowRemainingOnly] = useState(false)
+  const [brokerFilter, setBrokerFilter] = useState('All')
+  const [marketFilter, setMarketFilter] = useState('All')
+  const [statusFilter, setStatusFilter] = useState('All')
+  const [dateStart, setDateStart] = useState('')
+  const [dateEnd, setDateEnd] = useState('')
   const isAdmin = isAdminUser(session?.user)
 
   useEffect(() => {
@@ -732,7 +1027,17 @@ export default function App() {
   if (!session) return <AuthPage />
 
   const token = session.access_token
-  const visibleTrades = showRemainingOnly ? trades.filter(t => !t.pair_id || t.matched === false) : trades
+  const brokerOptions = ['All', ...Array.from(new Set(trades.map(t => t.broker || 'Unknown'))).sort()]
+  const visibleTrades = trades.filter(t => {
+    const brokerOk = brokerFilter === 'All' || (t.broker || 'Unknown') === brokerFilter
+    const marketOk = marketFilter === 'All' || getMarket(t) === marketFilter
+    const statusOk =
+      statusFilter === 'All' ||
+      (statusFilter === 'Open' && (!t.pair_id || t.matched === false)) ||
+      (statusFilter === 'Closed' && t.pair_id && t.matched !== false)
+    const dateOk = isDateInRange(t.trade_date, dateStart, dateEnd)
+    return brokerOk && marketOk && statusOk && dateOk
+  })
 
   return (
     <>
@@ -792,8 +1097,27 @@ export default function App() {
         .tab.active { color: var(--text); border-bottom-color: var(--accent); }
         .tab:hover { color: var(--text); }
 
-        .main-content { flex: 1; padding: 1.5rem; max-width: 1100px; margin: 0 auto; width: 100%; }
-        .dashboard-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+        .main-content { flex: 1; padding: 1.25rem; max-width: 1320px; margin: 0 auto; width: 100%; }
+        .dashboard-overview { background: linear-gradient(180deg, rgba(26,34,53,0.9), rgba(17,24,39,0.96)); border: 1px solid var(--border); border-radius: 8px; padding: 18px; margin-bottom: 14px; box-shadow: 0 18px 44px rgba(0,0,0,0.16); }
+        .dashboard-topbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 360px); align-items: stretch; gap: 18px; margin-bottom: 16px; }
+        .dashboard-heading { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+        .dashboard-kicker { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+        .dashboard-title { font-size: clamp(28px, 3vw, 38px); line-height: 1.05; margin: 0; letter-spacing: 0; }
+        .dashboard-subtitle { color: #A9B8CF; font-size: 14px; line-height: 1.55; max-width: 680px; margin-top: 10px; }
+        .dashboard-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+        .dashboard-chips span { min-height: 30px; display: inline-flex; align-items: center; padding: 0 11px; border: 1px solid var(--border2); border-radius: 999px; background: rgba(10,14,26,0.42); color: var(--muted); font-size: 12px; font-weight: 700; }
+        .dashboard-action-panel { display: flex; flex-direction: column; gap: 10px; justify-content: space-between; background: rgba(10,14,26,0.46); border: 1px solid var(--border2); border-radius: 8px; padding: 13px; min-width: 0; }
+        .action-panel-copy { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .action-panel-copy span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 800; }
+        .action-panel-copy strong { color: var(--text); font-size: 13px; white-space: nowrap; }
+        .dashboard-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
+        .ledger-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0.75rem 0; }
+        .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .filter-row select, .filter-row input { height: 34px; min-width: 128px; background: var(--surface); color: var(--text); border: 1px solid var(--border2); border-radius: 7px; padding: 0 10px; font-size: 12px; outline: none; }
+        .filter-row input[type="date"] { min-width: 150px; color-scheme: dark; }
+        .filter-row select:focus, .filter-row input:focus { border-color: var(--accent); }
+        .filter-clear { height: 34px; padding: 0 11px; border-radius: 7px; border: 1px solid var(--border2); background: rgba(10,14,26,0.38); color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
+        .filter-clear:hover { color: var(--text); border-color: var(--accent); }
         .toggle-control { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
         .toggle-control input { position: absolute; opacity: 0; pointer-events: none; }
         .toggle-track { width: 48px; height: 26px; border-radius: 999px; border: 1px solid var(--border2); background: var(--surface); position: relative; transition: all 0.2s; }
@@ -802,13 +1126,17 @@ export default function App() {
         .toggle-control input:checked + .toggle-track::after { transform: translateX(22px); background: var(--accent); }
 
         /* UPLOAD */
-        .upload-zone { border: 1.5px dashed var(--border2); border-radius: 12px; padding: 2.5rem 2rem; text-align: center; cursor: pointer; transition: all 0.2s; margin-bottom: 1.5rem; background: var(--surface); }
+        .dashboard-action-panel .upload-outer { margin: 0; width: 100%; }
+        .dashboard-action-panel .upload-zone { margin: 0; min-height: 68px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .dashboard-action-panel .upload-state { width: 100%; min-width: 0; flex-direction: column; gap: 4px; }
+        .dashboard-action-panel .upload-sub { max-width: 100%; white-space: normal; line-height: 1.35; }
+        .upload-zone { border: 1px dashed var(--border2); border-radius: 8px; padding: 10px 14px; text-align: center; cursor: pointer; transition: all 0.2s; margin-bottom: 1rem; background: var(--surface); }
         .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(59,130,246,0.05); }
         .upload-zone.uploading { cursor: default; border-color: var(--accent); }
-        .upload-state { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-        .upload-icon { color: var(--muted); }
-        .upload-label { font-size: 15px; font-weight: 500; }
-        .upload-sub { font-size: 12px; color: var(--muted); }
+        .upload-state { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
+        .upload-icon { display: none; }
+        .upload-label { font-size: 13px; font-weight: 700; white-space: nowrap; }
+        .upload-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .spinner { width: 28px; height: 28px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg) } }
         .check-icon { width: 40px; height: 40px; background: var(--profit-bg); border: 2px solid var(--profit); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--profit); font-size: 18px; }
@@ -818,58 +1146,115 @@ export default function App() {
         .retry { font-size: 12px; color: var(--muted); }
 
         /* SUMMARY CARDS */
-        .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 1.5rem; }
-        .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+        .period-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+        .period-card { background: linear-gradient(180deg, rgba(26,34,53,0.86), rgba(17,24,39,0.96)); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
+        .period-card.profit { border-color: rgba(16,185,129,0.34); }
+        .period-card.loss { border-color: rgba(239,68,68,0.34); }
+        .period-card-head { display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 10px; min-height: 74px; }
+        .period-total { font-family: var(--font); font-size: 18px; font-weight: 800; line-height: 1.2; text-align: right; white-space: nowrap; }
+        .period-lines { display: grid; gap: 8px; padding: 11px 0; }
+        .period-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); min-width: 0; }
+        .period-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .period-line strong { font-family: var(--font); font-size: 13px; color: var(--text); white-space: nowrap; }
+        .period-empty { color: var(--muted); font-size: 12px; padding: 2px 0; }
+        .period-total-row { padding-top: 10px; border-top: 1px solid var(--border); color: var(--text); font-weight: 700; }
+        .overall-totals-card { display: grid; align-content: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
+        .overall-totals-card.profit { border-color: rgba(16,185,129,0.28); }
+        .overall-totals-card.loss { border-color: rgba(239,68,68,0.28); }
+        .cards-grid { display: grid; grid-template-columns: repeat(3, minmax(145px, 1fr)); gap: 10px; margin-bottom: 1rem; }
+        .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-height: 74px; }
         .summary-card.profit { border-color: var(--buy-border); background: var(--buy-bg); }
         .summary-card.loss { border-color: var(--sell-border); background: var(--sell-bg); }
-        .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
-        .card-value { font-size: 18px; font-weight: 600; font-family: var(--font); }
-        .card-sub { font-size: 13px; margin-top: 4px; font-family: var(--font); }
+        .card-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+        .card-value { font-size: 16px; font-weight: 600; font-family: var(--font); line-height: 1.25; }
+        .card-sub { font-size: 12px; margin-top: 3px; font-family: var(--font); }
         .profit-text { color: var(--profit) !important; }
         .loss-text { color: var(--loss) !important; }
+        .broker-breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 10px; margin: -0.25rem 0 1rem; }
+        .broker-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 13px; }
+        .broker-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+        .broker-kicker { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+        .broker-name { font-size: 14px; font-weight: 800; color: var(--text); line-height: 1.25; }
+        .broker-pl { font-family: var(--font); font-size: 17px; font-weight: 800; line-height: 1.2; text-align: right; white-space: nowrap; }
+        .broker-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .broker-stats div { min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; background: var(--bg); }
+        .broker-stats span { display: block; font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; }
+        .broker-stats strong { display: block; font-family: var(--font); font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
         /* TRADES */
-        .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 12px; }
-        .trade-groups { display: flex; flex-direction: column; gap: 16px; }
-        .symbol-group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-        .symbol-header { padding: 12px 16px; background: var(--surface2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-        .symbol-ticker { font-family: var(--font); font-size: 14px; font-weight: 600; color: var(--accent); margin-right: 10px; }
-        .symbol-company { font-size: 12px; color: var(--muted); }
+        .section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0; }
+        .trade-groups { display: flex; flex-direction: column; gap: 10px; }
+        .symbol-group { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .symbol-header { min-height: 38px; padding: 8px 12px; background: var(--surface2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .symbol-header > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+        .symbol-ticker { font-family: var(--font); font-size: 13px; font-weight: 700; color: var(--accent); flex: 0 0 auto; }
+        .symbol-company { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .broker-pill { flex: 0 0 auto; font-size: 9px; font-weight: 700; color: var(--text); border: 1px solid var(--border2); border-radius: 999px; padding: 2px 7px; background: var(--surface); }
 
-        .trade-pair { display: grid; grid-template-columns: 1fr 1fr auto; gap: 1px; border-bottom: 1px solid var(--border); }
+        .trade-pair { display: grid; grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1fr) 118px; gap: 1px; border-bottom: 1px solid var(--border); }
         .trade-pair:last-child { border-bottom: none; }
-        .trade-pair.unmatched { grid-template-columns: 1fr; }
-        .trade-leg { padding: 14px 16px; }
+        .trade-pair.unmatched { grid-template-columns: minmax(0, 1fr) 190px; }
+        .trade-pair.unmatched .trade-leg { min-height: 52px; }
+        .pair-direction { display: flex; align-items: center; justify-content: center; background: var(--surface2); border-right: 1px solid var(--border); padding: 8px; }
+        .pair-direction span { display: inline-flex; align-items: center; justify-content: center; width: 54px; min-height: 24px; border-radius: 999px; font-size: 9px; font-weight: 900; letter-spacing: 0.08em; font-family: var(--font); }
+        .long-pair .pair-direction span { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
+        .short-pair .pair-direction span { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
+        .trade-leg { padding: 9px 12px; min-width: 0; display: grid; grid-template-columns: 72px minmax(150px, 1fr) 120px 120px; align-items: center; gap: 10px; }
         .sell-leg { background: var(--sell-bg); }
         .buy-leg { background: var(--buy-bg); }
 
         /* Date row inside leg */
-        .leg-top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .leg-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; }
-        .leg-date { font-size: 11px; color: var(--muted); font-family: var(--font); letter-spacing: 0.03em; }
+        .leg-top-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        .leg-badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; line-height: 1.2; }
+        .leg-date { font-size: 10px; color: var(--muted); font-family: var(--font); letter-spacing: 0; white-space: nowrap; }
         .sell-badge { background: rgba(239,68,68,0.15); color: var(--loss); border: 1px solid rgba(239,68,68,0.3); }
         .buy-badge { background: rgba(16,185,129,0.15); color: var(--profit); border: 1px solid rgba(16,185,129,0.3); }
 
-        .leg-detail { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
-        .leg-qty { font-family: var(--font); font-size: 15px; font-weight: 600; }
-        .leg-at { color: var(--muted); font-size: 12px; }
-        .leg-rate { font-family: var(--font); font-size: 13px; color: var(--muted); }
-        .leg-avg-tag { font-size: 10px; color: var(--accent); background: rgba(59,130,246,0.12); padding: 1px 5px; border-radius: 4px; margin-left: 2px; letter-spacing: 0.05em; }
-        .leg-charges { font-size: 11px; color: var(--muted); }
-        .leg-amount { font-family: var(--font); font-size: 14px; font-weight: 600; margin-top: 6px; }
+        .leg-detail { display: grid; grid-template-columns: minmax(58px, max-content) minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
+        .leg-qty { font-family: var(--font); font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; }
+        .leg-at { display: none; }
+        .leg-rate { font-family: var(--font); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .leg-avg-tag { font-size: 9px; color: var(--accent); background: rgba(59,130,246,0.12); padding: 1px 4px; border-radius: 4px; margin-left: 2px; letter-spacing: 0; }
+        .leg-charges { font-size: 10px; color: var(--muted); font-family: var(--font); white-space: nowrap; text-align: right; }
+        .leg-amount { font-family: var(--font); font-size: 13px; font-weight: 700; margin-top: 0; white-space: nowrap; text-align: right; }
         .sell-amount { color: var(--loss); }
         .buy-amount { color: var(--profit); }
 
-        .pair-pl { padding: 14px 16px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; min-width: 130px; background: var(--surface2); }
-        .pl-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 4px; }
-        .pl-value { font-family: var(--font); font-size: 16px; font-weight: 700; }
+        .pair-pl { padding: 9px 12px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; min-width: 0; background: var(--surface2); }
+        .pl-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 3px; }
+        .pl-value { font-family: var(--font); font-size: 13px; font-weight: 700; white-space: nowrap; }
         .profit-pl .pl-value { color: var(--profit); }
         .loss-pl .pl-value { color: var(--loss); }
 
-        .pending-tag { padding: 10px 16px; font-size: 12px; color: var(--orange); background: var(--orange-bg); border-top: 1px solid rgba(245,158,11,0.2); }
+        .pending-tag { padding: 9px 12px; font-size: 11px; color: var(--orange); background: var(--orange-bg); border-top: none; display: flex; align-items: center; justify-content: flex-end; text-align: right; }
+        .trade-pair.futures-contract .pending-tag { color: #3b82f6; background: rgba(59,130,246,0.08); border-top: 1px solid rgba(59,130,246,0.2); }
         .agg-tag { opacity: 0.7; font-size: 11px; }
 
+        .ledger-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
+        .trade-ledger { width: 100%; min-width: 1140px; border-collapse: collapse; font-size: 12px; }
+        .trade-ledger th { position: sticky; top: 0; z-index: 1; background: var(--surface2); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+        .trade-ledger td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; white-space: nowrap; }
+        .trade-ledger tr:last-child td { border-bottom: none; }
+        .trade-ledger tbody tr:hover { background: rgba(59,130,246,0.05); }
+        .trade-ledger .open-row { background: rgba(245,158,11,0.035); }
+        .ledger-symbol { color: var(--accent) !important; font-family: var(--font); font-weight: 700; }
+        .ledger-muted { color: var(--muted) !important; }
+        .ledger-broker { font-size: 9px; padding: 2px 6px; }
+        .ledger-side { display: grid; grid-template-columns: 34px minmax(48px, max-content) minmax(92px, 1fr); align-items: center; gap: 7px; font-family: var(--font); }
+        .ledger-side strong { font-size: 12px; }
+        .ledger-side span:last-child { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+        .ledger-side-badge { border-radius: 999px; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-align: center; }
+        .ledger-side-badge.buy { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
+        .ledger-side-badge.sell { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
+        .direction-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; min-height: 24px; border-radius: 999px; padding: 2px 8px; font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; }
+        .direction-pill.long { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
+        .direction-pill.short { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
+        .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 700; }
+        .status-pill.closed { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.22); }
+        .status-pill.open { color: var(--orange); background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.22); }
+
         .empty-state { text-align: center; padding: 4rem 1rem; color: var(--muted); }
+        .empty-state.compact { padding: 2rem 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
         .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; }
 
         /* CALENDAR */
@@ -913,9 +1298,37 @@ export default function App() {
         .splash-logo { font-family: var(--font); font-size: 20px; letter-spacing: 0.3em; color: var(--accent); animation: pulse 1.5s ease infinite; }
         @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
 
+        @media (max-width: 1100px) {
+          .period-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        @media (max-width: 920px) {
+          .dashboard-topbar { grid-template-columns: 1fr; }
+          .dashboard-action-panel { max-width: none; }
+        }
+
         @media (max-width: 640px) {
-          .cards-grid { grid-template-columns: repeat(2, 1fr); }
+          .dashboard-overview { padding: 14px; }
+          .dashboard-topbar { gap: 14px; }
+          .dashboard-title { font-size: 28px; }
+          .dashboard-subtitle { font-size: 13px; }
+          .dashboard-chips { display: grid; grid-template-columns: 1fr; }
+          .dashboard-chips span { justify-content: space-between; }
+          .action-panel-copy { flex-direction: column; gap: 4px; }
+          .action-panel-copy strong { white-space: normal; }
+          .ledger-toolbar { align-items: stretch; flex-direction: column; }
+          .filter-row { display: grid; grid-template-columns: 1fr; }
+          .filter-row select, .filter-row input, .filter-clear { width: 100%; }
+          .period-grid, .cards-grid { grid-template-columns: 1fr; }
+          .broker-stats { grid-template-columns: 1fr; }
           .trade-pair { grid-template-columns: 1fr 1fr; }
+          .trade-pair.unmatched { grid-template-columns: 1fr; }
+          .pair-direction { grid-column: 1 / -1; justify-content: flex-start; border-right: none; border-bottom: 1px solid var(--border); }
+          .trade-leg { grid-template-columns: 1fr; gap: 6px; padding: 10px 12px; }
+          .leg-top-row { justify-content: space-between; }
+          .leg-detail { grid-template-columns: max-content minmax(0, 1fr); }
+          .leg-charges, .leg-amount { text-align: left; }
+          .pending-tag { justify-content: flex-start; text-align: left; border-top: 1px solid rgba(245,158,11,0.2); }
           .pair-pl { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
           .main-content { padding: 1rem; }
           .dashboard-toolbar { align-items: flex-start; flex-direction: column; }
@@ -964,17 +1377,63 @@ export default function App() {
           <main className="main-content">
           {tab === 'dashboard' && (
             <>
-              <UploadZone token={token} onSuccess={fetchData} />
-              <SummaryCards summary={summary} />
-              <div className="dashboard-toolbar">
+              <section className="dashboard-overview">
+                <div className="dashboard-topbar">
+                  <div className="dashboard-heading">
+                    <div className="dashboard-kicker">Trading Ledger</div>
+                    <h1 className="dashboard-title">Portfolio Tracker</h1>
+                    <p className="dashboard-subtitle">Review closed P&L, broker performance, charges, and open trade status in one workspace.</p>
+                    <div className="dashboard-chips">
+                      <span>{summary?.total_trades || 0} closed trades</span>
+                      <span>{trades.filter(t => !t.pair_id || t.matched === false).length} open rows</span>
+                      <span>{brokerOptions.length - 1} brokers</span>
+                    </div>
+                  </div>
+                  <div className="dashboard-action-panel">
+                    <div className="action-panel-copy">
+                      <span>Statement Upload</span>
+                      <strong>Import PDF trades</strong>
+                    </div>
+                    <UploadZone token={token} onSuccess={fetchData} />
+                  </div>
+                </div>
+                <SummaryCards summary={summary} trades={trades} dateStart={dateStart} dateEnd={dateEnd} />
+              </section>
+              <div className="ledger-toolbar">
                 <div className="section-title">{showRemainingOnly ? 'Remaining Trades' : 'Trade Pairs — Grouped by Symbol'}</div>
-                <label className="toggle-control">
-                  <input type="checkbox" checked={showRemainingOnly} onChange={e => setShowRemainingOnly(e.target.checked)} />
-                  <span className="toggle-track" />
-                  <span>Show only remaining trades</span>
-                </label>
+                <div className="filter-row">
+                  <select value={brokerFilter} onChange={e => setBrokerFilter(e.target.value)}>
+                    {brokerOptions.map(b => <option key={b} value={b}>{b === 'All' ? 'All brokers' : b}</option>)}
+                  </select>
+                  <select value={marketFilter} onChange={e => setMarketFilter(e.target.value)}>
+                    <option value="All">All markets</option>
+                    <option value="Ready">Ready</option>
+                    <option value="Futures">Futures</option>
+                  </select>
+                  <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                    <option value="All">All status</option>
+                    <option value="Closed">Closed</option>
+                    <option value="Open">Open</option>
+                  </select>
+                  <input
+                    type="date"
+                    value={dateStart}
+                    onChange={e => setDateStart(e.target.value)}
+                    aria-label="Filter start date"
+                  />
+                  <input
+                    type="date"
+                    value={dateEnd}
+                    onChange={e => setDateEnd(e.target.value)}
+                    min={dateStart || undefined}
+                    aria-label="Filter end date"
+                  />
+                  {(dateStart || dateEnd) && (
+                    <button className="filter-clear" type="button" onClick={() => { setDateStart(''); setDateEnd('') }}>Clear dates</button>
+                  )}
+                </div>
               </div>
-              <TradePairs trades={visibleTrades} />
+              <TradeLedger trades={visibleTrades} />
             </>
           )}
           {tab === 'calendar' && <CalendarView token={token} />}
