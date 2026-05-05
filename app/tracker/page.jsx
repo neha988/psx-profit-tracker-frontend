@@ -234,11 +234,11 @@ function AuthStyles() {
 // ─── UPLOAD ZONE (Multi-PDF) ────────────────
 function UploadZone({ token, onSuccess }) {
   const [dragging, setDragging] = useState(false)
-  const [uploads, setUploads] = useState([]) // [{name, status, message}]
+  const [uploads, setUploads] = useState([]) // [{name, status, message, file, conflict}]
   const [running, setRunning] = useState(false)
   const inputId = 'pdfInput'
 
-  const uploadFile = async (file, index, updateItem) => {
+  const uploadFile = async (file, index, updateItem, force = false) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       updateItem(index, 'error', 'Not a PDF file')
       return
@@ -247,14 +247,20 @@ function UploadZone({ token, onSuccess }) {
     const form = new FormData()
     form.append('file', file)
     try {
-      const res = await fetch(`${API}/api/upload-pdf`, {
+      const url = force ? `${API}/api/upload-pdf?force=true` : `${API}/api/upload-pdf`
+      const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form
       })
       const data = await res.json()
       if (!res.ok) {
-        updateItem(index, 'error', data.detail || `Failed (${res.status})`)
+        // Check if it's a conflict error (already uploaded)
+        if (res.status === 409 && data.detail && data.detail.includes('already exists')) {
+          updateItem(index, 'conflict', data.detail)
+        } else {
+          updateItem(index, 'error', data.detail || `Failed (${res.status})`)
+        }
       } else {
         updateItem(index, 'success', `${data.trades_imported} trades imported · ${data.statement_id}`)
       }
@@ -267,7 +273,7 @@ function UploadZone({ token, onSuccess }) {
     const fileArr = Array.from(files)
     if (!fileArr.length) return
 
-    const initial = fileArr.map(f => ({ name: f.name, status: 'pending', message: 'Waiting...' }))
+    const initial = fileArr.map(f => ({ name: f.name, status: 'pending', message: 'Waiting...', file: f, conflict: false }))
     setUploads(initial)
     setRunning(true)
 
@@ -277,11 +283,20 @@ function UploadZone({ token, onSuccess }) {
 
     // Upload one by one sequentially
     for (let i = 0; i < fileArr.length; i++) {
-      await uploadFile(fileArr[i], i, updateItem)
+      await uploadFile(fileArr[i], i, updateItem, false)
     }
 
     setRunning(false)
     onSuccess() // refresh data after all uploads
+  }
+
+  const handleForceRetry = async (index) => {
+    const file = uploads[index].file
+    const updateItem = (i, status, message) => {
+      setUploads(prev => prev.map((u, idx) => idx === i ? { ...u, status, message, conflict: false } : u))
+    }
+    await uploadFile(file, index, updateItem, true)
+    onSuccess() // refresh data
   }
 
   const onDrop = (e) => {
@@ -294,6 +309,7 @@ function UploadZone({ token, onSuccess }) {
 
   const allDone = uploads.length > 0 && !running
   const hasError = uploads.some(u => u.status === 'error')
+  const hasConflict = uploads.some(u => u.status === 'conflict')
 
   return (
     <div className="upload-outer">
@@ -344,10 +360,19 @@ function UploadZone({ token, onSuccess }) {
                   {u.status === 'uploading' && <div className="spinner-sm" />}
                   {u.status === 'success'   && <span className="file-check">✓</span>}
                   {u.status === 'error'     && <span className="file-x">✕</span>}
+                  {u.status === 'conflict'  && <span className="file-warn">⚠</span>}
                 </div>
                 <div className="upload-file-info">
                   <div className="upload-file-name">{u.name}</div>
                   <div className="upload-file-msg">{u.message}</div>
+                  {u.status === 'conflict' && (
+                    <button 
+                      className="btn-force-retry"
+                      onClick={() => handleForceRetry(i)}
+                    >
+                      Force Re-import
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -772,11 +797,40 @@ function TradeLedger({ trades }) {
 
   const sideCell = (trade, side) => {
     if (!trade) return <span className="ledger-muted">-</span>
+    const dateLabel = fmtDate(trade.trade_dates || trade.trade_date)
     return (
       <div className="ledger-side">
         <span className={`ledger-side-badge ${side.toLowerCase()}`}>{side}</span>
-        <strong>{trade.quantity?.toLocaleString()}</strong>
-        <span>@ Rs. {fmt(trade.rate)}</span>
+        <div className="ledger-side-main">
+          <strong>{trade.quantity?.toLocaleString()}</strong>
+          <span>@ Rs. {fmt(trade.rate)}</span>
+        </div>
+        {dateLabel && <span className="ledger-side-date">{dateLabel}</span>}
+      </div>
+    )
+  }
+
+  const amountCell = (row) => {
+    if (row.open) {
+      const trade = row.buy || row.sell
+      const side = row.buy ? 'BUY' : 'SELL'
+      return (
+        <div className="ledger-amount single">
+          <span className={side.toLowerCase()}>Rs. {fmt(trade?.gross_amount || 0)}</span>
+        </div>
+      )
+    }
+
+    return (
+      <div className="ledger-amount">
+        <div>
+          <span className="ledger-amount-label buy">BUY</span>
+          <strong className="buy">Rs. {fmt(row.buy?.gross_amount || 0)}</strong>
+        </div>
+        <div>
+          <span className="ledger-amount-label sell">SELL</span>
+          <strong className="sell">Rs. {fmt(row.sell?.gross_amount || 0)}</strong>
+        </div>
       </div>
     )
   }
@@ -802,10 +856,11 @@ function TradeLedger({ trades }) {
         <tbody>
           {rows.map(row => {
             const charges = (row.buy?.total_charges || 0) + (row.sell?.total_charges || 0)
-            const amount = (row.sell?.gross_amount || row.buy?.gross_amount || 0)
             return (
               <tr key={row.id} className={row.open ? 'open-row' : ''}>
-                <td>{fmtDate(row.date)}</td>
+                <td>{row.open ? fmtDate(row.date) : (
+                  <span className="ledger-muted">See BUY/SELL</span>
+                )}</td>
                 <td><span className="broker-pill ledger-broker">{row.broker}</span></td>
                 <td className="ledger-symbol">{row.symbol}</td>
                 <td>{row.market}</td>
@@ -819,7 +874,7 @@ function TradeLedger({ trades }) {
                 <td>{sideCell(row.buy, 'BUY')}</td>
                 <td>{sideCell(row.sell, 'SELL')}</td>
                 <td>Rs. {fmt(charges)}</td>
-                <td>Rs. {fmt(amount)}</td>
+                <td>{amountCell(row)}</td>
                 <td className={row.pl === null ? 'ledger-muted' : isProfit(row.pl) ? 'profit-text' : isLoss(row.pl) ? 'loss-text' : ''}>
                   {row.pl === null ? '-' : fmtPL(row.pl)}
                 </td>
@@ -1240,12 +1295,23 @@ export default function App() {
         .ledger-symbol { color: var(--accent) !important; font-family: var(--font); font-weight: 700; }
         .ledger-muted { color: var(--muted) !important; }
         .ledger-broker { font-size: 9px; padding: 2px 6px; }
-        .ledger-side { display: grid; grid-template-columns: 34px minmax(48px, max-content) minmax(92px, 1fr); align-items: center; gap: 7px; font-family: var(--font); }
+        .ledger-side { display: grid; grid-template-columns: 34px minmax(110px, 1fr); align-items: center; gap: 7px; font-family: var(--font); min-width: 0; }
+        .ledger-side-main { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
         .ledger-side strong { font-size: 12px; }
-        .ledger-side span:last-child { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+        .ledger-side-main span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+        .ledger-side-date { grid-column: 2; color: var(--muted); font-size: 10px; line-height: 1.1; }
         .ledger-side-badge { border-radius: 999px; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-align: center; }
         .ledger-side-badge.buy { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
         .ledger-side-badge.sell { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
+        .ledger-amount { display: grid; gap: 5px; font-family: var(--font); min-width: 132px; }
+        .ledger-amount.single { min-width: 0; }
+        .ledger-amount div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .ledger-amount-label { flex: 0 0 auto; border-radius: 999px; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.05em; }
+        .ledger-amount-label.buy { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
+        .ledger-amount-label.sell { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
+        .ledger-amount strong, .ledger-amount.single span { font-size: 12px; white-space: nowrap; }
+        .ledger-amount .buy { color: var(--profit); }
+        .ledger-amount .sell { color: var(--loss); }
         .direction-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; min-height: 24px; border-radius: 999px; padding: 2px 8px; font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; }
         .direction-pill.long { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
         .direction-pill.short { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
