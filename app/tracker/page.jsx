@@ -485,6 +485,10 @@ function OverallTotalsCard({ overall }) {
         <strong>Rs. {fmt(overall.charges)}</strong>
       </div>
       <div className="period-line">
+        <span>Closed Trades Charges</span>
+        <strong>Rs. {fmt(overall.closedTradesCharges)}</strong>
+      </div>
+      <div className="period-line">
         <span>Closed Trades</span>
         <strong>{overall.closedTrades}</strong>
       </div>
@@ -520,6 +524,7 @@ function SummaryCards({ summary, trades = [], dateStart = '', dateEnd = '' }) {
     profit: pairs.reduce((sum, t) => sum + t.pl, 0),
     charges: Number(summary.total_charges) || pairs.reduce((sum, t) => sum + t.charges, 0),
     closedTrades: summary.total_trades || 0,
+    closedTradesCharges: trades.filter(t => t.pair_id).reduce((sum, t) => sum + (t.total_charges || 0), 0),
     openTrades: trades.filter(t => !t.pair_id || t.matched === false).length,
   }
   return (
@@ -696,6 +701,23 @@ function TradePairs({ trades }) {
                 </div>
                 {sell && <TradeLeg t={sell} side="SELL" />}
                 {buy  && <TradeLeg t={buy}  side="BUY"  />}
+                <div className="charges-column">
+                  <div className="charges-header">Charges</div>
+                  <div className="charges-content">
+                    <div className="charge-item buy-charge">
+                      <span className="charge-label">Buy:</span>
+                      <span className="charge-value">Rs. {fmt(buy?.total_charges || 0)}</span>
+                    </div>
+                    <div className="charge-item sell-charge">
+                      <span className="charge-label">Sell:</span>
+                      <span className="charge-value">Rs. {fmt(sell?.total_charges || 0)}</span>
+                    </div>
+                    <div className="charge-item total-charge">
+                      <span className="charge-label">Total:</span>
+                      <span className="charge-value">Rs. {fmt((buy?.total_charges || 0) + (sell?.total_charges || 0))}</span>
+                    </div>
+                  </div>
+                </div>
                 <div className={`pair-pl ${isProfit(pl) ? 'profit-pl' : isLoss(pl) ? 'loss-pl' : ''}`}>
                   <span className="pl-label">Net P&L</span>
                   <span className="pl-value">{fmtPL(pl)}</span>
@@ -1275,6 +1297,21 @@ export default function App() {
         .sell-amount { color: var(--loss); }
         .buy-amount { color: var(--profit); }
 
+        .charges-column { padding: 9px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface2); border-top: 1px solid var(--border); min-width: 0; }
+        .charges-header { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; }
+        .charges-content { display: flex; flex-direction: column; gap: 4px; }
+        .charge-item { display: flex; justify-content: space-between; align-items: center; font-size: 11px; padding: 4px 6px; border-radius: 4px; }
+        .charge-item.buy-charge { background: rgba(16,185,129,0.08); border-left: 2px solid var(--profit); }
+        .charge-item.sell-charge { background: rgba(239,68,68,0.08); border-left: 2px solid var(--loss); }
+        .charge-item.total-charge { background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-weight: 700; border-top: 1px solid var(--border); padding-top: 6px; margin-top: 2px; }
+        .charge-label { color: var(--muted); }
+        .buy-charge .charge-label { color: var(--profit); }
+        .sell-charge .charge-label { color: var(--loss); }
+        .charge-value { font-family: var(--font); font-size: 12px; font-weight: 700; }
+        .buy-charge .charge-value { color: var(--profit); }
+        .sell-charge .charge-value { color: var(--loss); }
+        .total-charge .charge-value { color: var(--text); }
+
         .pair-pl { padding: 9px 12px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; min-width: 0; background: var(--surface2); }
         .pl-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 3px; }
         .pl-value { font-family: var(--font); font-size: 13px; font-weight: 700; white-space: nowrap; }
@@ -1395,6 +1432,7 @@ export default function App() {
           .leg-detail { grid-template-columns: max-content minmax(0, 1fr); }
           .leg-charges, .leg-amount { text-align: left; }
           .pending-tag { justify-content: flex-start; text-align: left; border-top: 1px solid rgba(245,158,11,0.2); }
+          .charges-column { grid-column: 1 / -1; }
           .pair-pl { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
           .main-content { padding: 1rem; }
           .dashboard-toolbar { align-items: flex-start; flex-direction: column; }
