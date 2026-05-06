@@ -618,7 +618,7 @@ function TradePairs({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
     </div>
   )
 
-  // Group by symbol
+  // Group by symbolffgigi
   const bySymbol = {}
   trades.forEach(t => {
     const key = `${t.broker || 'Unknown'}|${t.symbol}`
