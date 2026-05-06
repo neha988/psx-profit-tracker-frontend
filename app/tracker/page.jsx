@@ -610,7 +610,7 @@ const getPairDirection = (buy, sell) => {
   return 'LONG'
 }
 
-function TradePairs({ trades }) {
+function TradePairs({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
   if (!trades || trades.length === 0) return (
     <div className="empty-state">
       <div className="empty-icon">📊</div>
@@ -667,9 +667,13 @@ function TradePairs({ trades }) {
       }
       
       return {
+        pair_id,
         BUY: sides.BUY.length > 0 ? aggregateSide(sides.BUY) : null,
         SELL: sides.SELL.length > 0 ? aggregateSide(sides.SELL) : null,
-        net_pl: trades.find(t => t.pair_id === pair_id)?.net_pl || 0
+        net_pl: trades.find(t => t.pair_id === pair_id)?.net_pl || 0,
+        // Store individual trades for expanded view
+        BUY_individual: sides.BUY,
+        SELL_individual: sides.SELL,
       }
     })
     
@@ -688,47 +692,9 @@ function TradePairs({ trades }) {
             <span className="broker-pill">{broker}</span>
           </div>
 
-          {/* ── Matched pairs ── */}
-          {pairs.map((pair, i) => {
-            const sell = pair.SELL
-            const buy  = pair.BUY
-            const pl   = pair.net_pl || 0
-            const direction = getPairDirection(buy, sell)
-            return (
-              <div key={i} className={`trade-pair ${direction === 'SHORT' ? 'short-pair' : 'long-pair'}`}>
-                <div className="pair-direction">
-                  <span>{direction}</span>
-                </div>
-                {sell && <TradeLeg t={sell} side="SELL" />}
-                {buy  && <TradeLeg t={buy}  side="BUY"  />}
-                <div className="charges-column">
-                  <div className="charges-header">Charges</div>
-                  <div className="charges-content">
-                    <div className="charge-item buy-charge">
-                      <span className="charge-label">Buy:</span>
-                      <span className="charge-value">Rs. {fmt(buy?.total_charges || 0)}</span>
-                    </div>
-                    <div className="charge-item sell-charge">
-                      <span className="charge-label">Sell:</span>
-                      <span className="charge-value">Rs. {fmt(sell?.total_charges || 0)}</span>
-                    </div>
-                    <div className="charge-item total-charge">
-                      <span className="charge-label">Total:</span>
-                      <span className="charge-value">Rs. {fmt((buy?.total_charges || 0) + (sell?.total_charges || 0))}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className={`pair-pl ${isProfit(pl) ? 'profit-pl' : isLoss(pl) ? 'loss-pl' : ''}`}>
-                  <span className="pl-label">Net P&L</span>
-                  <span className="pl-value">{fmtPL(pl)}</span>
-                </div>
-              </div>
-            )
-          })}
-
-          {/* ── Unmatched (awaiting) ── */}
+          {/* ── Unmatched (remaining) - SHOW FIRST ── */}
           {unmatched.map((t, i) => (
-            <div key={i} className={`trade-pair unmatched ${t.is_futures ? 'futures-contract' : t.trade_type === 'SELL' ? 'short-sell' : 'pending-sell'}`}>
+            <div key={i} className={`trade-pair unmatched ${t.is_futures ? 'futures-contract' : t.trade_type === 'SELL' ? 'short-sell' : 'pending-buy'}`}>
               <TradeLeg t={t} side={t.trade_type} />
               <div className="pending-tag">
                 {t.is_futures
@@ -742,6 +708,114 @@ function TradePairs({ trades }) {
               </div>
             </div>
           ))}
+
+          {/* ── Matched pairs (closed) - SHOW AFTER ── */}
+          {pairs.map((pair, i) => {
+            const sell = pair.SELL
+            const buy  = pair.BUY
+            const pl   = pair.net_pl || 0
+            const direction = getPairDirection(buy, sell)
+            const pairId = pair.pair_id
+            const isExpanded = expandedPairs[pairId]
+            
+            if (isExpanded) {
+              // Expanded view: Show individual legs
+              return (
+                <div key={pairId} className={`trade-pair ${direction === 'SHORT' ? 'short-pair' : 'long-pair'} expanded-view`}>
+                  <div className="pair-header-expanded">
+                    <div className="pair-direction">
+                      <span>{direction}</span>
+                    </div>
+                    <button 
+                      className="toggle-details-btn expanded"
+                      onClick={() => onTogglePair(pairId)}
+                      title="Collapse to merged view"
+                    >
+                      ↑ Hide details
+                    </button>
+                    <div className={`pair-pl ${isProfit(pl) ? 'profit-pl' : isLoss(pl) ? 'loss-pl' : ''}`}>
+                      <span className="pl-label">Net P&L</span>
+                      <span className="pl-value">{fmtPL(pl)}</span>
+                    </div>
+                  </div>
+                  
+                  {/* Individual BUY legs */}
+                  <div className="legs-section">
+                    <div className="legs-label">BUY Legs</div>
+                    {pair.BUY_individual && pair.BUY_individual.map((buyLeg, idx) => (
+                      <TradeLeg key={`buy-${idx}`} t={buyLeg} side="BUY" />
+                    ))}
+                  </div>
+                  
+                  {/* Individual SELL legs */}
+                  <div className="legs-section">
+                    <div className="legs-label">SELL Legs</div>
+                    {pair.SELL_individual && pair.SELL_individual.map((sellLeg, idx) => (
+                      <TradeLeg key={`sell-${idx}`} t={sellLeg} side="SELL" />
+                    ))}
+                  </div>
+                  
+                  {/* Charges summary */}
+                  <div className="charges-column">
+                    <div className="charges-header">Charges</div>
+                    <div className="charges-content">
+                      <div className="charge-item buy-charge">
+                        <span className="charge-label">Buy:</span>
+                        <span className="charge-value">Rs. {fmt(buy?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-item sell-charge">
+                        <span className="charge-label">Sell:</span>
+                        <span className="charge-value">Rs. {fmt(sell?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-item total-charge">
+                        <span className="charge-label">Total:</span>
+                        <span className="charge-value">Rs. {fmt((buy?.total_charges || 0) + (sell?.total_charges || 0))}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            } else {
+              // Merged/collapsed view (default)
+              return (
+                <div key={pairId} className={`trade-pair ${direction === 'SHORT' ? 'short-pair' : 'long-pair'}`}>
+                  <div className="pair-direction">
+                    <span>{direction}</span>
+                  </div>
+                  {sell && <TradeLeg t={sell} side="SELL" />}
+                  {buy  && <TradeLeg t={buy}  side="BUY"  />}
+                  <div className="charges-column">
+                    <div className="charges-header">Charges</div>
+                    <div className="charges-content">
+                      <div className="charge-item buy-charge">
+                        <span className="charge-label">Buy:</span>
+                        <span className="charge-value">Rs. {fmt(buy?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-item sell-charge">
+                        <span className="charge-label">Sell:</span>
+                        <span className="charge-value">Rs. {fmt(sell?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-item total-charge">
+                        <span className="charge-label">Total:</span>
+                        <span className="charge-value">Rs. {fmt((buy?.total_charges || 0) + (sell?.total_charges || 0))}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className={`pair-pl ${isProfit(pl) ? 'profit-pl' : isLoss(pl) ? 'loss-pl' : ''}`}>
+                    <button 
+                      className="toggle-details-btn"
+                      onClick={() => onTogglePair(pairId)}
+                      title="Expand to show individual trade legs"
+                    >
+                      ↓ Show details
+                    </button>
+                    <span className="pl-label">Net P&L</span>
+                    <span className="pl-value">{fmtPL(pl)}</span>
+                  </div>
+                </div>
+              )
+            }
+          })}
         </div>
       ))}
     </div>
@@ -815,7 +889,15 @@ function TradeLedger({ trades }) {
     row.direction = row.open ? '-' : getPairDirection(row.buy, row.sell)
   })
 
-  rows.sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.symbol.localeCompare(b.symbol))
+  // Sort: Unmatched first (remaining) → Closed trades → by date (newer first)
+  rows.sort((a, b) => {
+    // Open trades (unmatched) come FIRST
+    if (a.open && !b.open) return -1
+    if (!a.open && b.open) return 1
+    
+    // Within same status, sort by date (newer first)
+    return (b.date || '').localeCompare(a.date || '') || a.symbol.localeCompare(b.symbol)
+  })
 
   const sideCell = (trade, side) => {
     if (!trade) return <span className="ledger-muted">-</span>
@@ -895,7 +977,26 @@ function TradeLedger({ trades }) {
                 </td>
                 <td>{sideCell(row.buy, 'BUY')}</td>
                 <td>{sideCell(row.sell, 'SELL')}</td>
-                <td>Rs. {fmt(charges)}</td>
+                <td>
+                  {row.open ? (
+                    <span>Rs. {fmt(charges)}</span>
+                  ) : (
+                    <div className="ledger-charges-breakdown">
+                      <div className="charge-line buy-charge-line">
+                        <span className="charge-label">BUY</span>
+                        <span className="charge-amount">Rs. {fmt(row.buy?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-line sell-charge-line">
+                        <span className="charge-label">SELL</span>
+                        <span className="charge-amount">Rs. {fmt(row.sell?.total_charges || 0)}</span>
+                      </div>
+                      <div className="charge-line total-charge-line">
+                        <span className="charge-label">Total</span>
+                        <span className="charge-amount">Rs. {fmt(charges)}</span>
+                      </div>
+                    </div>
+                  )}
+                </td>
                 <td>{amountCell(row)}</td>
                 <td className={row.pl === null ? 'ledger-muted' : isProfit(row.pl) ? 'profit-text' : isLoss(row.pl) ? 'loss-text' : ''}>
                   {row.pl === null ? '-' : fmtPL(row.pl)}
@@ -910,7 +1011,7 @@ function TradeLedger({ trades }) {
   )
 }
 
-function CalendarView({ token }) {
+function CalendarView({ token, expandedPairs = {}, onTogglePair = () => {} }) {
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
@@ -986,7 +1087,7 @@ function CalendarView({ token }) {
             <span>{selected}</span>
             <button className="btn-link" onClick={() => { setSelected(null); setDayTrades(null) }}>✕</button>
           </div>
-          <TradePairs trades={dayTrades} />
+          <TradePairs trades={dayTrades} expandedPairs={expandedPairs} onTogglePair={onTogglePair} />
         </div>
       )}
     </div>
@@ -1075,7 +1176,15 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('All')
   const [dateStart, setDateStart] = useState('')
   const [dateEnd, setDateEnd] = useState('')
+  const [expandedPairs, setExpandedPairs] = useState({}) // Track which closed trade pairs are expanded
   const isAdmin = isAdminUser(session?.user)
+
+  const togglePairExpanded = (pairId) => {
+    setExpandedPairs(prev => ({
+      ...prev,
+      [pairId]: !prev[pairId]
+    }))
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false) })
@@ -1268,7 +1377,7 @@ export default function App() {
         .symbol-company { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .broker-pill { flex: 0 0 auto; font-size: 9px; font-weight: 700; color: var(--text); border: 1px solid var(--border2); border-radius: 999px; padding: 2px 7px; background: var(--surface); }
 
-        .trade-pair { display: grid; grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1fr) 118px; gap: 1px; border-bottom: 1px solid var(--border); }
+        .trade-pair { display: grid; grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1fr) 118px; gap: 1px; border-bottom: 1px solid var(--border); position: relative; }
         .trade-pair:last-child { border-bottom: none; }
         .trade-pair.unmatched { grid-template-columns: minmax(0, 1fr) 190px; }
         .trade-pair.unmatched .trade-leg { min-height: 52px; }
@@ -1312,11 +1421,29 @@ export default function App() {
         .sell-charge .charge-value { color: var(--loss); }
         .total-charge .charge-value { color: var(--text); }
 
-        .pair-pl { padding: 9px 12px; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; min-width: 0; background: var(--surface2); }
+        .pair-pl { padding: 9px 12px; display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; gap: 6px; justify-items: flex-end; align-items: center; min-width: 0; background: var(--surface2); }
+        .pair-pl .toggle-details-btn { grid-column: 2; grid-row: 1; }
+        .pair-pl .pl-label { grid-column: 2; grid-row: 2; }
+        .pair-pl .pl-value { grid-column: 2; grid-row: 3; }
         .pl-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 3px; }
         .pl-value { font-family: var(--font); font-size: 13px; font-weight: 700; white-space: nowrap; }
         .profit-pl .pl-value { color: var(--profit); }
         .loss-pl .pl-value { color: var(--loss); }
+
+        /* Toggle details button */
+        .toggle-details-btn { background: rgba(59,130,246,0.15); border: 1px solid var(--accent); color: var(--accent); padding: 5px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+        .toggle-details-btn:hover { background: var(--accent); color: white; }
+        .toggle-details-btn.expanded { background: rgba(16,185,129,0.15); border-color: var(--profit); color: var(--profit); }
+        .toggle-details-btn.expanded:hover { background: var(--profit); color: white; }
+
+        /* Expanded view for closed trades */
+        .trade-pair.expanded-view { grid-template-columns: 1fr; }
+        .trade-pair.expanded-view .pair-header-expanded { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: var(--surface2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+        .pair-header-expanded .pair-direction { margin: 0; padding: 0; background: none; border: none; }
+        .pair-header-expanded .pair-pl { padding: 0; background: none; }
+
+        .legs-section { display: flex; flex-direction: column; gap: 1px; padding: 0; }
+        .legs-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 8px 12px; background: var(--surface2); border-bottom: 1px solid var(--border); }
 
         .pending-tag { padding: 9px 12px; font-size: 11px; color: var(--orange); background: var(--orange-bg); border-top: none; display: flex; align-items: center; justify-content: flex-end; text-align: right; }
         .trade-pair.futures-contract .pending-tag { color: #3b82f6; background: rgba(59,130,246,0.08); border-top: 1px solid rgba(59,130,246,0.2); }
@@ -1349,6 +1476,13 @@ export default function App() {
         .ledger-amount strong, .ledger-amount.single span { font-size: 12px; white-space: nowrap; }
         .ledger-amount .buy { color: var(--profit); }
         .ledger-amount .sell { color: var(--loss); }
+        .ledger-charges-breakdown { display: flex; flex-direction: column; gap: 4px; font-family: var(--font); font-size: 11px; min-width: 140px; }
+        .charge-line { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 2px 4px; }
+        .charge-label { color: var(--muted); text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; flex-shrink: 0; }
+        .charge-amount { font-weight: 600; white-space: nowrap; }
+        .buy-charge-line .charge-amount { color: var(--profit); }
+        .sell-charge-line .charge-amount { color: var(--loss); }
+        .total-charge-line .charge-amount { color: var(--text); font-weight: 700; padding-top: 2px; border-top: 1px solid var(--border); }
         .direction-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; min-height: 24px; border-radius: 999px; padding: 2px 8px; font-family: var(--font); font-size: 9px; font-weight: 900; letter-spacing: 0.08em; }
         .direction-pill.long { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
         .direction-pill.short { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
@@ -1540,7 +1674,7 @@ export default function App() {
               <TradeLedger trades={visibleTrades} />
             </>
           )}
-          {tab === 'calendar' && <CalendarView token={token} />}
+          {tab === 'calendar' && <CalendarView token={token} expandedPairs={expandedPairs} onTogglePair={togglePairExpanded} />}
           {tab === 'calculator' && <MonthlyIncomeCalculator token={token} />}
           {tab === 'admin' && isAdmin && <AdminPanel token={token} />}
           </main>
