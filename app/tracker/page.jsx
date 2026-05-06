@@ -823,7 +823,7 @@ function TradePairs({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
 }
 
 // ─── CALENDAR ────────────────────────────────
-function TradeLedger({ trades }) {
+function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
   if (!trades || trades.length === 0) return (
     <div className="empty-state compact">
       <p>No trades match these filters.</p>
@@ -873,6 +873,7 @@ function TradeLedger({ trades }) {
     const first = pairTrades[0]
     rows.push({
       id: pairId,
+      pairId: pairId,
       date: first.trade_date,
       broker: first.broker || 'Unknown',
       symbol: first.symbol,
@@ -882,6 +883,9 @@ function TradeLedger({ trades }) {
       pl: first.net_pl || 0,
       status: 'Closed',
       open: false,
+      // Store individual trades for expanded view
+      buys_individual: buys,
+      sells_individual: sells,
     })
   })
 
@@ -960,7 +964,7 @@ function TradeLedger({ trades }) {
         <tbody>
           {rows.map(row => {
             const charges = (row.buy?.total_charges || 0) + (row.sell?.total_charges || 0)
-            return (
+            return [
               <tr key={row.id} className={row.open ? 'open-row' : ''}>
                 <td>{row.open ? fmtDate(row.date) : (
                   <span className="ledger-muted">See BUY/SELL</span>
@@ -1001,9 +1005,54 @@ function TradeLedger({ trades }) {
                 <td className={row.pl === null ? 'ledger-muted' : isProfit(row.pl) ? 'profit-text' : isLoss(row.pl) ? 'loss-text' : ''}>
                   {row.pl === null ? '-' : fmtPL(row.pl)}
                 </td>
-                <td><span className={`status-pill ${row.open ? 'open' : 'closed'}`}>{row.status}</span></td>
-              </tr>
-            )
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between' }}>
+                    <span className={`status-pill ${row.open ? 'open' : 'closed'}`}>{row.status}</span>
+                    {!row.open && (
+                      <button 
+                        className="ledger-details-btn"
+                        onClick={() => onTogglePair(row.pairId)}
+                        title={expandedPairs[row.pairId] ? 'Hide details' : 'Show details'}
+                      >
+                        {expandedPairs[row.pairId] ? '↑' : '↓'}
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>,
+              !row.open && expandedPairs[row.pairId] ? (
+                <tr key={`${row.id}-expanded`} className="expanded-ledger-row">
+                  <td colSpan="11">
+                    <div className="expanded-trades-detail">
+                      <div className="expanded-section">
+                        <div className="expanded-section-title">BUY Legs</div>
+                        {row.buys_individual && row.buys_individual.map((t, idx) => (
+                          <div key={idx} className="expanded-trade-item">
+                            <div className="item-row"><span className="item-label">Date:</span> <span>{fmtDate(t.trade_date)}</span></div>
+                            <div className="item-row"><span className="item-label">Qty:</span> <span>{t.quantity?.toLocaleString()}</span></div>
+                            <div className="item-row"><span className="item-label">Rate:</span> <span>Rs. {fmt(t.rate)}</span></div>
+                            <div className="item-row"><span className="item-label">Charges:</span> <span>Rs. {fmt(t.total_charges)}</span></div>
+                            <div className="item-row"><span className="item-label">Amount:</span> <span className="profit">Rs. {fmt(t.gross_amount)}</span></div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="expanded-section">
+                        <div className="expanded-section-title">SELL Legs</div>
+                        {row.sells_individual && row.sells_individual.map((t, idx) => (
+                          <div key={idx} className="expanded-trade-item">
+                            <div className="item-row"><span className="item-label">Date:</span> <span>{fmtDate(t.trade_date)}</span></div>
+                            <div className="item-row"><span className="item-label">Qty:</span> <span>{t.quantity?.toLocaleString()}</span></div>
+                            <div className="item-row"><span className="item-label">Rate:</span> <span>Rs. {fmt(t.rate)}</span></div>
+                            <div className="item-row"><span className="item-label">Charges:</span> <span>Rs. {fmt(t.total_charges)}</span></div>
+                            <div className="item-row"><span className="item-label">Amount:</span> <span className="loss">Rs. {fmt(t.gross_amount)}</span></div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ) : null
+            ]
           })}
         </tbody>
       </table>
@@ -1490,6 +1539,22 @@ export default function App() {
         .status-pill.closed { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.22); }
         .status-pill.open { color: var(--orange); background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.22); }
 
+        /* Details button for ledger closed trades */
+        .ledger-details-btn { background: rgba(59,130,246,0.12); border: 1px solid var(--accent); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .ledger-details-btn:hover { background: var(--accent); color: white; }
+
+        /* Expanded row in ledger */
+        .expanded-ledger-row { background: var(--surface2) !important; }
+        .expanded-ledger-row td { padding: 0 !important; border-bottom: none !important; }
+        .expanded-trades-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px; }
+        .expanded-section { display: flex; flex-direction: column; gap: 12px; }
+        .expanded-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+        .expanded-trade-item { display: grid; gap: 4px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+        .item-row { display: flex; justify-content: space-between; gap: 12px; }
+        .item-label { color: var(--muted); font-weight: 600; min-width: 70px; }
+        .expanded-trade-item .profit { color: var(--profit); font-family: var(--font); font-weight: 600; }
+        .expanded-trade-item .loss { color: var(--loss); font-family: var(--font); font-weight: 600; }
+
         .empty-state { text-align: center; padding: 4rem 1rem; color: var(--muted); }
         .empty-state.compact { padding: 2rem 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
         .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; }
@@ -1671,7 +1736,7 @@ export default function App() {
                   )}
                 </div>
               </div>
-              <TradeLedger trades={visibleTrades} />
+              <TradeLedger trades={visibleTrades} expandedPairs={expandedPairs} onTogglePair={togglePairExpanded} />
             </>
           )}
           {tab === 'calendar' && <CalendarView token={token} expandedPairs={expandedPairs} onTogglePair={togglePairExpanded} />}
