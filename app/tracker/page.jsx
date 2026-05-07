@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import AdminPanel from '../admin'
 import { MarketingStyles, PublicNavbar } from '../marketing'
+import { TradeModal } from '../components/TradeModal'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -32,7 +33,7 @@ const fmt = (n) => new Intl.NumberFormat('en-PK', { minimumFractionDigits: 2, ma
 const fmtPL = (n) => `${n >= 0 ? '+' : ''}Rs. ${fmt(n)}`
 const isProfit = (n) => n > 0
 const isLoss = (n) => n < 0
-const getMarket = (t) => t?.is_futures ? 'Futures' : 'Ready'
+const getMarket = (t) => t?.settlement_type === 'Futures' ? 'Futures' : 'Ready'
 
 // Convert UTC time to Pakistani Time (PKT = UTC+5)
 const toPKT = (dateStr) => {
@@ -694,17 +695,39 @@ function TradePairs({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
 
           {/* ── Unmatched (remaining) - SHOW FIRST ── */}
           {unmatched.map((t, i) => (
-            <div key={i} className={`trade-pair unmatched ${t.is_futures ? 'futures-contract' : t.trade_type === 'SELL' ? 'short-sell' : 'pending-buy'}`}>
+            <div key={i} className={`trade-pair unmatched ${t.settlement_type === 'Futures' ? 'futures-contract' : t.trade_type === 'SELL' ? 'short-sell' : 'pending-buy'}`}>
               <TradeLeg t={t} side={t.trade_type} />
               <div className="pending-tag">
-                {t.is_futures
-                  ? `📊 Futures Contract (${t.settlement_type})`
-                  : t.trade_type === 'SELL'
-                  ? '⏳ Awaiting BUY to match'
-                  : '⏳ Awaiting SELL to match'}
-                {t.aggregated && t.aggregated_count > 1 && (
-                  <span className="agg-tag"> · {t.aggregated_count} entries combined</span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                  <span>
+                    {t.settlement_type === 'Futures'
+                      ? `📊 Futures Contract (${t.settlement_type})`
+                      : t.trade_type === 'SELL'
+                      ? '⏳ Awaiting BUY to match'
+                      : '⏳ Awaiting SELL to match'}
+                    {t.aggregated && t.aggregated_count > 1 && (
+                      <span className="agg-tag"> · {t.aggregated_count} entries combined</span>
+                    )}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button 
+                    className="ledger-action-btn edit"
+                    onClick={() => onEdit(t)}
+                    title="Edit trade"
+                    style={{ fontSize: '14px' }}
+                  >
+                    ✏️
+                  </button>
+                  <button 
+                    className="ledger-action-btn delete"
+                    onClick={() => onDelete(t.id)}
+                    title="Delete trade"
+                    style={{ fontSize: '14px' }}
+                  >
+                    🗑️
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -823,7 +846,7 @@ function TradePairs({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
 }
 
 // ─── CALENDAR ────────────────────────────────
-function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
+function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {}, onEdit = () => {}, onDelete = () => {} }) {
   if (!trades || trades.length === 0) return (
     <div className="empty-state compact">
       <p>No trades match these filters.</p>
@@ -861,12 +884,27 @@ function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
       const qty = items.reduce((sum, t) => sum + (t.quantity || 0), 0)
       const gross = items.reduce((sum, t) => sum + (t.gross_amount || 0), 0)
       const charges = items.reduce((sum, t) => sum + (t.total_charges || 0), 0)
+      const first = items[0]
+      // Create clean object to avoid inheriting malformed fields
       return {
-        ...items[0],
+        id: first.id,  // Single trade id for editing
+        symbol: first.symbol,
+        company_name: first.company_name,
+        trade_type: first.trade_type,
+        trade_date: first.trade_date,
         quantity: qty,
+        rate: qty ? gross / qty : first.rate,
         gross_amount: gross,
         total_charges: charges,
-        rate: qty ? gross / qty : items[0].rate,
+        commission: first.commission,
+        broker: first.broker,
+        settlement_type: first.settlement_type,
+        is_futures: first.is_futures,
+        is_short_sell: first.is_short_sell,
+        matched: first.matched,
+        pair_id: first.pair_id,
+        gross_pl: first.gross_pl,
+        net_pl: first.net_pl,
         trade_dates: [...new Set(items.map(t => t.trade_date))].sort(),
       }
     }
@@ -959,6 +997,7 @@ function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
             <th>Amount</th>
             <th>P&L</th>
             <th>Status</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -1019,6 +1058,24 @@ function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
                     )}
                   </div>
                 </td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <button 
+                      className="ledger-action-btn edit"
+                      onClick={() => onEdit(row.buy || row.sell)}
+                      title="Edit trade"
+                    >
+                      ✏️
+                    </button>
+                    <button 
+                      className="ledger-action-btn delete"
+                      onClick={() => onDelete((row.buy || row.sell)?.id)}
+                      title="Delete trade"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </td>
               </tr>,
               !row.open && expandedPairs[row.pairId] ? (
                 <tr key={`${row.id}-expanded`} className="expanded-ledger-row">
@@ -1033,6 +1090,24 @@ function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
                             <div className="item-row"><span className="item-label">Rate:</span> <span>Rs. {fmt(t.rate)}</span></div>
                             <div className="item-row"><span className="item-label">Charges:</span> <span>Rs. {fmt(t.total_charges)}</span></div>
                             <div className="item-row"><span className="item-label">Amount:</span> <span className="profit">Rs. {fmt(t.gross_amount)}</span></div>
+                            <div className="item-row" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                              <button 
+                                className="ledger-action-btn edit"
+                                onClick={() => onEdit(t)}
+                                title="Edit trade"
+                                style={{ fontSize: '12px', padding: '4px 8px' }}
+                              >
+                                ✏️
+                              </button>
+                              <button 
+                                className="ledger-action-btn delete"
+                                onClick={() => onDelete(t.id)}
+                                title="Delete trade"
+                                style={{ fontSize: '12px', padding: '4px 8px' }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1045,6 +1120,24 @@ function TradeLedger({ trades, expandedPairs = {}, onTogglePair = () => {} }) {
                             <div className="item-row"><span className="item-label">Rate:</span> <span>Rs. {fmt(t.rate)}</span></div>
                             <div className="item-row"><span className="item-label">Charges:</span> <span>Rs. {fmt(t.total_charges)}</span></div>
                             <div className="item-row"><span className="item-label">Amount:</span> <span className="loss">Rs. {fmt(t.gross_amount)}</span></div>
+                            <div className="item-row" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                              <button 
+                                className="ledger-action-btn edit"
+                                onClick={() => onEdit(t)}
+                                title="Edit trade"
+                                style={{ fontSize: '12px', padding: '4px 8px' }}
+                              >
+                                ✏️
+                              </button>
+                              <button 
+                                className="ledger-action-btn delete"
+                                onClick={() => onDelete(t.id)}
+                                title="Delete trade"
+                                style={{ fontSize: '12px', padding: '4px 8px' }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1225,7 +1318,10 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('All')
   const [dateStart, setDateStart] = useState('')
   const [dateEnd, setDateEnd] = useState('')
-  const [expandedPairs, setExpandedPairs] = useState({}) // Track which closed trade pairs are expanded
+  const [expandedPairs, setExpandedPairs] = useState({})
+  const [tradeModalOpen, setTradeModalOpen] = useState(false)
+  const [tradeModalMode, setTradeModalMode] = useState('add') // 'add' or 'edit'
+  const [selectedTrade, setSelectedTrade] = useState(null)
   const isAdmin = isAdminUser(session?.user)
 
   const togglePairExpanded = (pairId) => {
@@ -1233,6 +1329,42 @@ export default function App() {
       ...prev,
       [pairId]: !prev[pairId]
     }))
+  }
+
+  const openAddTradeModal = () => {
+    setTradeModalMode('add')
+    setSelectedTrade(null)
+    setTradeModalOpen(true)
+  }
+
+  const openEditTradeModal = (trade) => {
+    setTradeModalMode('edit')
+    setSelectedTrade(trade)
+    setTradeModalOpen(true)
+  }
+
+  const handleDeleteTrade = async (tradeId) => {
+    // Validate trade ID - should be a single UUID, not comma-separated
+    if (!tradeId || typeof tradeId !== 'string' || tradeId.includes(',')) {
+      alert('✗ Cannot delete paired trades from summary view.\n\nExpand the pair (↓) to see individual trade legs, then delete from there.')
+      return
+    }
+
+    if (!window.confirm('Are you sure you want to delete this trade?')) return
+
+    try {
+      const res = await fetch(`${API}/api/trades/${tradeId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Delete failed')
+      
+      // Refresh trades
+      fetchData()
+      alert('✓ Trade deleted successfully')
+    } catch (err) {
+      alert(`✗ Error: ${err.message}`)
+    }
   }
 
   useEffect(() => {
@@ -1304,7 +1436,10 @@ export default function App() {
           --sans: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
         }
 
-        html, body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+        html, body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; overflow-x: hidden; }
+        html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
+        html { scrollbar-width: none; -ms-overflow-style: none; }
+        body { scrollbar-width: none; -ms-overflow-style: none; }
 
         /* AUTH */
         .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 1rem; }
@@ -1328,6 +1463,8 @@ export default function App() {
         .app-layout { min-height: calc(100vh - 68px); display: flex; flex-direction: column; }
         .tabs { display: flex; align-items: center; padding: 0 5vw; background: rgba(17,24,39,0.78); border-bottom: 1px solid var(--border); gap: 1rem; backdrop-filter: blur(16px); }
         .tab-buttons { display: flex; gap: 0; overflow-x: auto; }
+        .tab-buttons::-webkit-scrollbar { display: none; }
+        .tab-buttons { -ms-overflow-style: none; scrollbar-width: none; }
         .tab { padding: 12px 20px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; background: none; border-top: none; border-left: none; border-right: none; }
         .tab.active { color: var(--text); border-bottom-color: var(--accent); }
         .tab:hover { color: var(--text); }
@@ -1494,21 +1631,29 @@ export default function App() {
         .legs-section { display: flex; flex-direction: column; gap: 1px; padding: 0; }
         .legs-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 8px 12px; background: var(--surface2); border-bottom: 1px solid var(--border); }
 
-        .pending-tag { padding: 9px 12px; font-size: 11px; color: var(--orange); background: var(--orange-bg); border-top: none; display: flex; align-items: center; justify-content: flex-end; text-align: right; }
+        .pending-tag { padding: 9px 12px; font-size: 11px; color: var(--orange); background: var(--orange-bg); border-top: none; display: flex; align-items: center; justify-content: space-between; text-align: right; gap: 12px; }
         .trade-pair.futures-contract .pending-tag { color: #3b82f6; background: rgba(59,130,246,0.08); border-top: 1px solid rgba(59,130,246,0.2); }
         .agg-tag { opacity: 0.7; font-size: 11px; }
+        
+        .ledger-action-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px; border-radius: 4px; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; }
+        .ledger-action-btn:hover { background: rgba(59,130,246,0.15); }
+        .ledger-action-btn.edit { color: #3b82f6; }
+        .ledger-action-btn.delete { color: #ef4444; }
+        .ledger-action-btn:active { transform: scale(0.95); }
 
-        .ledger-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
-        .trade-ledger { width: 100%; min-width: 1140px; border-collapse: collapse; font-size: 12px; }
-        .trade-ledger th { position: sticky; top: 0; z-index: 1; background: var(--surface2); color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
-        .trade-ledger td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; white-space: nowrap; }
+        .ledger-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; overflow-y: hidden; width: 100%; max-width: 100%; }
+        .ledger-wrap::-webkit-scrollbar { display: none; }
+        .ledger-wrap { -ms-overflow-style: none; scrollbar-width: none; }
+        .trade-ledger { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .trade-ledger th { position: sticky; top: 0; z-index: 1; background: var(--surface2); color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+        .trade-ledger td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; white-space: nowrap; }
         .trade-ledger tr:last-child td { border-bottom: none; }
         .trade-ledger tbody tr:hover { background: rgba(59,130,246,0.05); }
         .trade-ledger .open-row { background: rgba(245,158,11,0.035); }
         .ledger-symbol { color: var(--accent) !important; font-family: var(--font); font-weight: 700; }
         .ledger-muted { color: var(--muted) !important; }
         .ledger-broker { font-size: 9px; padding: 2px 6px; }
-        .ledger-side { display: grid; grid-template-columns: 34px minmax(110px, 1fr); align-items: center; gap: 7px; font-family: var(--font); min-width: 0; }
+        .ledger-side { display: grid; grid-template-columns: 28px minmax(90px, 1fr); align-items: center; gap: 4px; font-family: var(--font); min-width: 0; }
         .ledger-side-main { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
         .ledger-side strong { font-size: 12px; }
         .ledger-side-main span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
@@ -1516,7 +1661,7 @@ export default function App() {
         .ledger-side-badge { border-radius: 999px; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-align: center; }
         .ledger-side-badge.buy { color: var(--profit); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.28); }
         .ledger-side-badge.sell { color: var(--loss); background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.28); }
-        .ledger-amount { display: grid; gap: 5px; font-family: var(--font); min-width: 132px; }
+        .ledger-amount { display: grid; gap: 3px; font-family: var(--font); min-width: 110px; }
         .ledger-amount.single { min-width: 0; }
         .ledger-amount div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
         .ledger-amount-label { flex: 0 0 auto; border-radius: 999px; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.05em; }
@@ -1525,7 +1670,7 @@ export default function App() {
         .ledger-amount strong, .ledger-amount.single span { font-size: 12px; white-space: nowrap; }
         .ledger-amount .buy { color: var(--profit); }
         .ledger-amount .sell { color: var(--loss); }
-        .ledger-charges-breakdown { display: flex; flex-direction: column; gap: 4px; font-family: var(--font); font-size: 11px; min-width: 140px; }
+        .ledger-charges-breakdown { display: flex; flex-direction: column; gap: 2px; font-family: var(--font); font-size: 10px; min-width: 120px; }
         .charge-line { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 2px 4px; }
         .charge-label { color: var(--muted); text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; flex-shrink: 0; }
         .charge-amount { font-weight: 600; white-space: nowrap; }
@@ -1630,7 +1775,7 @@ export default function App() {
           .leg-top-row { justify-content: space-between; }
           .leg-detail { grid-template-columns: max-content minmax(0, 1fr); }
           .leg-charges, .leg-amount { text-align: left; }
-          .pending-tag { justify-content: flex-start; text-align: left; border-top: 1px solid rgba(245,158,11,0.2); }
+          .pending-tag { justify-content: space-between; text-align: left; border-top: 1px solid rgba(245,158,11,0.2); gap: 8px; }
           .charges-column { grid-column: 1 / -1; }
           .pair-pl { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
           .main-content { padding: 1rem; }
@@ -1639,6 +1784,14 @@ export default function App() {
           .tab-buttons { width: 100%; }
           .tab { white-space: nowrap; }
           .calculator-controls, .calculator-results { grid-template-columns: 1fr; }
+          .trade-ledger { font-size: 11px; }
+          .trade-ledger td { padding: 6px 8px; }
+          .trade-ledger th { padding: 6px 8px; font-size: 9px; }
+          .ledger-side { grid-template-columns: 28px minmax(80px, 1fr); gap: 4px; }
+          .ledger-amount { min-width: 100px; gap: 2px; }
+          .ledger-charges-breakdown { min-width: 110px; gap: 2px; font-size: 10px; }
+          .charge-line { padding: 1px 2px; gap: 4px; }
+          .ledger-action-btn { font-size: 12px; padding: 3px 6px; }
         }
           /* MULTI UPLOAD */
 .upload-outer { margin-bottom: 1.5rem; }
@@ -1698,6 +1851,13 @@ export default function App() {
                       <strong>Import PDF trades</strong>
                     </div>
                     <UploadZone token={token} onSuccess={fetchData} />
+                    <button 
+                      className="btn-primary" 
+                      onClick={openAddTradeModal}
+                      style={{ marginTop: '8px' }}
+                    >
+                      ➕ Add Manual Trade
+                    </button>
                   </div>
                 </div>
                 <SummaryCards summary={summary} trades={trades} dateStart={dateStart} dateEnd={dateEnd} />
@@ -1736,7 +1896,13 @@ export default function App() {
                   )}
                 </div>
               </div>
-              <TradeLedger trades={visibleTrades} expandedPairs={expandedPairs} onTogglePair={togglePairExpanded} />
+              <TradeLedger 
+                trades={visibleTrades} 
+                expandedPairs={expandedPairs} 
+                onTogglePair={togglePairExpanded}
+                onEdit={openEditTradeModal}
+                onDelete={handleDeleteTrade}
+              />
             </>
           )}
           {tab === 'calendar' && <CalendarView token={token} expandedPairs={expandedPairs} onTogglePair={togglePairExpanded} />}
@@ -1745,6 +1911,14 @@ export default function App() {
           </main>
         </div>
       </div>
+      <TradeModal 
+        isOpen={tradeModalOpen}
+        mode={tradeModalMode}
+        trade={selectedTrade}
+        onClose={() => setTradeModalOpen(false)}
+        onSuccess={fetchData}
+        token={token}
+      />
     </>
   )
 }
